@@ -20,6 +20,7 @@ from starlette.responses import StreamingResponse, FileResponse
 import pywxdump
 from pywxdump import decrypt_merge, get_core_db
 from pywxdump.db import DBHandler
+from pywxdump.db.live_msg_reader import LiveMsgReader
 from pywxdump.db.utils import download_file, dat2img
 
 from .export import export_csv, export_json, export_html
@@ -143,7 +144,8 @@ def roomInfo(wxid: str = Body(None, embed=True)):
 
 @rs_api.api_route('/msg_list', methods=["GET", 'POST'])
 @error9999
-def get_msgs(wxid: str = Body(...), start: int = Body(...), limit: int = Body(...), start_time: str = Body(None), end_time: str = Body(None)):
+def get_msgs(wxid: str = Body(...), start: int = Body(...), limit: int = Body(...), start_time: str = Body(None),
+             end_time: str = Body(None), source: str = Query("merge"), read_mode: str = Query(None)):
     """
     获取联系人的聊天记录
     :return:
@@ -153,13 +155,33 @@ def get_msgs(wxid: str = Body(...), start: int = Body(...), limit: int = Body(..
         st = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S").timestamp()
     if end_time:
         et = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S").timestamp()
+
+    preferred_source = (source or "merge").lower()
+    if read_mode and str(read_mode).lower() == "live":
+        preferred_source = "live"
+
     my_wxid = gc.get_conf(gc.at, "last")
     if not my_wxid: return ReJson(1001, body="my_wxid is required")
     db_config = gc.get_conf(my_wxid, "db_config")
 
     db = DBHandler(db_config, my_wxid=my_wxid)
+    data_source = "merge"
+
+    if preferred_source == "live":
+        wx_path = gc.get_conf(my_wxid, "wx_path")
+        key = gc.get_conf(my_wxid, "key")
+        if wx_path and key:
+            try:
+                live_reader = LiveMsgReader(wx_path=wx_path, key=key, formatter=db)
+                msgs, users = live_reader.get_msgs(wxids=wxid, start_index=start, page_size=limit,
+                                                   start_createtime=st, end_createtime=et, my_talker=my_wxid)
+                data_source = "live"
+                return ReJson(0, {"msg_list": msgs, "user_list": users, "data_source": data_source})
+            except Exception:
+                pass
+
     msgs, users = db.get_msgs(wxids=wxid, start_index=start, page_size=limit, start_createtime=st, end_createtime=et)
-    return ReJson(0, {"msg_list": msgs, "user_list": users})
+    return ReJson(0, {"msg_list": msgs, "user_list": users, "data_source": data_source})
 
 
 @rs_api.get('/imgsrc')
